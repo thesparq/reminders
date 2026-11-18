@@ -1,0 +1,8 @@
+*.wasm
+.env
+.roc-golem-ref/
+build/
+golem-temp/
+.agents/
+.claude
+.gemini/

@@ -1,0 +1,28 @@
+# Golem Cloud Application Manifest
+# Schema: https://schema.golem.cloud/app/golem/1.6.0/golem.schema.json
+manifestVersion: 1.6.0
+
+app: reminders
+
+version:
+  git:
+    tagPattern: "v*"
+    hashFallback: true
+    staticFallback: "v0.1.0"
+
+environments:
+  local:
+    server: local
+    version:
+      git:
+        allowDirty: true
+  cloud:
+    server: cloud
+    deployment:
+      versionCheck: true
+
+components:
+  reminders:assistant:
+    componentWasm: "build/reminders_agent.wasm"
+    build:
+      - command: "./tooling/build.sh assistant"
