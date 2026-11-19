@@ -26,3 +26,10 @@ components:
     componentWasm: "build/reminders_agent.wasm"
     build:
       - command: "./tooling/build.sh assistant"
+
+httpApi:
+  deployments:
+    local:
+      - subdomain: reminders
+        agents:
+          reminders-assistant: {}

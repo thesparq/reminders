@@ -43,7 +43,7 @@ import Wiki exposing [formatInboxNote, formatAgendaMarkdown, buildIndexJson, isA
 import Telegram exposing [buildSendMessageRequest, parseTelegramUpdate, extractStringField]
 import Llm exposing [buildChatCompletionRequest, buildChatCompletionJson, parseChatCompletionResponse]
 
-processMessageMethod : Method(MessageInput, MessageOutput)
+processMessageMethod : Method(Str, Str)
 processMessageMethod = method({
 	name: "process_message",
 	description: "Processes inbound user message, updates LLM wiki, and schedules reminders if applicable.",
@@ -123,9 +123,9 @@ deserializeState = |raw|
 resolveMessageIntent : AgentState, Str, U64 -> Effect.Effect({ isReminder : Bool, title : Str, targetMillis : U64, reply : Str })
 resolveMessageIntent = |state, messageText, nowMillis|
 	if !(Str.is_empty(state.llmConfig.apiKey)) {
-		llmJson = buildChatCompletionJson(state.llmConfig, messageText, nowMillis)
+		req = buildChatCompletionRequest(state.llmConfig, messageText, nowMillis)
 		Effect.and_then(
-			http(llmJson),
+			httpRequest(req),
 			|httpRes| {
 				parsed =
 					match httpRes {
@@ -218,33 +218,48 @@ dispatchTelegramAlert = |state, text|
 		Effect.always(Ok("Telegram notification skipped (bot token or chat ID not set)"))
 	}
 
-handleProcessMessage : AgentState, MessageInput -> Effect.Effect(Result({ state : AgentState, out : MessageOutput }, Str))
+handleProcessMessage : AgentState, Str -> Effect.Effect(Result({ state : AgentState, out : Str }, Str))
 handleProcessMessage = |state, rawInput| {
-	isTgUpdate = Str.contains(rawInput.text, "\"update_id\"")
+	isTgUpdate = Str.contains(rawInput, "\"update_id\"")
 
 	input =
 		if isTgUpdate {
-			match parseTelegramUpdate(rawInput.text) {
+			match parseTelegramUpdate(rawInput) {
 				Ok(tg) => {
-					senderPhone: if Str.is_empty(tg.senderPhone) { rawInput.senderPhone } else { tg.senderPhone },
+					senderPhone: if Str.is_empty(tg.senderPhone) { state.ownerPhone } else { tg.senderPhone },
 					text: tg.text,
 					mediaType: tg.mediaType,
 					mediaId: tg.mediaId,
 				}
-				Err(_) => rawInput
+				Err(_) => {
+					senderPhone: state.ownerPhone,
+					text: rawInput,
+					mediaType: "text",
+					mediaId: "",
+				}
 			}
 		} else {
-			rawInput
+			textVal = extractStringField(rawInput, "text")
+			phoneVal = extractStringField(rawInput, "senderPhone")
+			typeVal = extractStringField(rawInput, "mediaType")
+			idVal = extractStringField(rawInput, "mediaId")
+			{
+				senderPhone: if Str.is_empty(phoneVal) { state.ownerPhone } else { phoneVal },
+				text: if Str.is_empty(textVal) { rawInput } else { textVal },
+				mediaType: if Str.is_empty(typeVal) { "text" } else { typeVal },
+				mediaId: idVal,
+			}
 		}
 
 	extractedChatId =
 		if isTgUpdate {
-			match parseTelegramUpdate(rawInput.text) {
+			match parseTelegramUpdate(rawInput) {
 				Ok(tg) => tg.chatId
 				Err(_) => state.telegramChatId
 			}
 		} else {
-			state.telegramChatId
+			chatIdVal = extractStringField(rawInput, "chatId")
+			if Str.is_empty(chatIdVal) { state.telegramChatId } else { chatIdVal }
 		}
 
 	effectiveState =
@@ -258,11 +273,11 @@ handleProcessMessage = |state, rawInput| {
 		Effect.always(
 			Ok({
 				state: effectiveState,
-				out: {
+				out: encodeMessageOutput({
 					status: "rejected",
 					replyText: "Unauthorized sender. This assistant is private to its owner.",
 					reminderScheduled: False,
-				},
+				}),
 			}),
 		)
 	} else if isAgendaQuery(input.text) {
@@ -273,11 +288,11 @@ handleProcessMessage = |state, rawInput| {
 				Effect.always(
 					Ok({
 						state: effectiveState,
-						out: {
+						out: encodeMessageOutput({
 							status: "success",
 							replyText: agendaText,
 							reminderScheduled: False,
-						},
+						}),
 					}),
 				),
 		)
@@ -345,11 +360,11 @@ handleProcessMessage = |state, rawInput| {
 															Effect.always(
 																Ok({
 																	state: nextState,
-																	out: {
+																	out: encodeMessageOutput({
 																		status: "success",
 																		replyText: reply,
 																		reminderScheduled: True,
-																	},
+																	}),
 																}),
 															),
 													)
@@ -396,11 +411,11 @@ handleProcessMessage = |state, rawInput| {
 																			Effect.always(
 																				Ok({
 																					state: nextState,
-																					out: {
+																					out: encodeMessageOutput({
 																						status: "success",
 																						replyText: reply,
 																						reminderScheduled: True,
-																					},
+																					}),
 																				}),
 																			),
 																	)
@@ -438,11 +453,11 @@ handleProcessMessage = |state, rawInput| {
 													Effect.always(
 														Ok({
 															state: nextState,
-															out: {
+															out: encodeMessageOutput({
 																status: "success",
 																replyText: reply,
 																reminderScheduled: False,
-															},
+															}),
 														}),
 													),
 											)
@@ -659,8 +674,8 @@ agent =
 		|> registerEffectfulTyped(
 			processMessageMethod,
 			handleProcessMessage,
-			decodeMessageInput,
-			encodeMessageOutput,
+			|s| Ok(s),
+			|s| s,
 		)
 		|> registerEffectfulTyped(
 			triggerReminderMethod,
