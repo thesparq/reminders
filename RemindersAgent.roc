@@ -4,6 +4,7 @@ module [
 	triggerReminderMethod,
 	midnightOrganizerMethod,
 	queryAgendaMethod,
+	configureMethod,
 ]
 
 import pf.Golem exposing [
@@ -39,7 +40,7 @@ import Types exposing [
 ]
 import Scheduler exposing [calculateLadder, formatMilestoneNotice, parseReminderIntent]
 import Wiki exposing [formatInboxNote, formatAgendaMarkdown, buildIndexJson, isAgendaQuery]
-import Telegram exposing [buildSendMessageRequest, parseTelegramUpdate]
+import Telegram exposing [buildSendMessageRequest, parseTelegramUpdate, extractStringField]
 import Llm exposing [buildChatCompletionRequest, buildChatCompletionJson, parseChatCompletionResponse]
 
 processMessageMethod : Method(MessageInput, MessageOutput)
@@ -68,6 +69,13 @@ queryAgendaMethod = method({
 	name: "query_agenda",
 	description: "Returns the user's current daily agenda and active reminders.",
 	promptHint: "Call to query current agenda and scheduled events.",
+})
+
+configureMethod : Method(Str, Str)
+configureMethod = method({
+	name: "configure",
+	description: "Configures or updates owner phone, Telegram credentials, and LLM API settings.",
+	promptHint: "Call to configure agent credentials (ownerPhone, telegramBotToken, telegramChatId, llmApiKey, llmModel, llmProviderUrl).",
 })
 
 findReminderById : List(ReminderRecord), Str -> Result(ReminderRecord, Str)
@@ -445,8 +453,9 @@ handleProcessMessage = |state, rawInput| {
 				}
 			},
 		)
-	}
+	},
 )
+}
 }
 
 handleTriggerReminder : AgentState, Str -> Effect.Effect(Result({ state : AgentState, out : Str }, Str))
@@ -599,6 +608,42 @@ handleQueryAgenda : AgentState, Str -> Result(Str, Str)
 handleQueryAgenda = |state, _query|
 	Ok(formatAgendaMarkdown(state.activeReminders, state.inbox))
 
+handleConfigure : AgentState, Str -> Effect.Effect(Result({ state : AgentState, out : Str }, Str))
+handleConfigure = |state, configJson| {
+	phone = extractStringField(configJson, "ownerPhone")
+	token = extractStringField(configJson, "telegramBotToken")
+	chatId = extractStringField(configJson, "telegramChatId")
+	apiKey = extractStringField(configJson, "llmApiKey")
+	model = extractStringField(configJson, "llmModel")
+	url = extractStringField(configJson, "llmProviderUrl")
+
+	nextPhone = if Str.is_empty(phone) { state.ownerPhone } else { phone }
+	nextToken = if Str.is_empty(token) { state.telegramBotToken } else { token }
+	nextChatId = if Str.is_empty(chatId) { state.telegramChatId } else { chatId }
+
+	currentLlm = state.llmConfig
+	nextLlm = {
+		apiKey: if Str.is_empty(apiKey) { currentLlm.apiKey } else { apiKey },
+		model: if Str.is_empty(model) { currentLlm.model } else { model },
+		providerUrl: if Str.is_empty(url) { currentLlm.providerUrl } else { url },
+	}
+
+	nextState = {
+		..state,
+		ownerPhone: nextPhone,
+		telegramBotToken: nextToken,
+		telegramChatId: nextChatId,
+		llmConfig: nextLlm,
+	}
+
+	Effect.always(
+		Ok({
+			state: nextState,
+			out: "Agent configuration updated successfully.",
+		}),
+	)
+}
+
 agent : Agent(AgentState)
 agent =
 	define(
@@ -626,6 +671,12 @@ agent =
 		|> registerEffectfulTyped(
 			midnightOrganizerMethod,
 			handleMidnightOrganizer,
+			|s| Ok(s),
+			|s| s,
+		)
+		|> registerEffectfulTyped(
+			configureMethod,
+			handleConfigure,
 			|s| Ok(s),
 			|s| s,
 		)
